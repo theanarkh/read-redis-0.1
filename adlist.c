@@ -49,9 +49,11 @@ list *listCreate(void)
     list->head = list->tail = NULL;
     // 链表中的节点数
     list->len = 0;
+     // 复制节点的函数
     list->dup = NULL;
-    // 释放节点vlaue域的函数
+    // 释放节点value域的函数
     list->free = NULL;
+    // 匹配节点的函数
     list->match = NULL;
     return list;
 }
@@ -257,7 +259,7 @@ list *listDup(list *orig)
     copy->dup = orig->dup;
     copy->free = orig->free;
     copy->match = orig->match;
-    // 申请一个链表迭代器
+    // 申请一个新的链表头节点
     iter = listGetIterator(orig, AL_START_HEAD);
     while((node = listNext(iter)) != NULL) {
         void *value;

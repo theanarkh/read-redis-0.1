@@ -651,17 +651,19 @@ static void oom(const char *msg) {
 }
 
 /* ====================== Redis server networking stuff ===================== */
+// 找到超时的客户端，关闭他
 void closeTimedoutClients(void) {
     redisClient *c;
     listNode *ln;
     time_t now = time(NULL);
-
+    // 重置列表的开始指针
     listRewind(server.clients);
+    // 遍历客户端列表
     while ((ln = listYield(server.clients)) != NULL) {
         c = listNodeValue(ln);
         if (!(c->flags & REDIS_SLAVE) &&    /* no timeout for slaves */
             !(c->flags & REDIS_MASTER) &&   /* no timeout for masters */
-             (now - c->lastinteraction > server.maxidletime)) {
+             (now - c->lastinteraction > server.maxidletime)) { // 上次交互时间已经超时
             redisLog(REDIS_DEBUG,"Closing idle client");
             freeClient(c);
         }
@@ -1367,7 +1369,9 @@ static void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mas
         return;
     }
     if (nread) {
+        // 保存客户端发送的数据
         c->querybuf = sdscatlen(c->querybuf, buf, nread);
+        // 记录最后一次收到数据的时间
         c->lastinteraction = time(NULL);
     } else {
         return;
@@ -1376,6 +1380,7 @@ static void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mas
 again:
     if (c->bulklen == -1) {
         /* Read the first line of the query */
+        // p指向第一个\n
         char *p = strchr(c->querybuf,'\n');
         size_t querylen;
         if (p) {
@@ -1536,10 +1541,10 @@ static void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
 }
 
 /* ======================= Redis objects implementation ===================== */
-
+// 创建一个redisObj，优先从空闲列表里取
 static robj *createObject(int type, void *ptr) {
     robj *o;
-
+    // 空闲列表非空，则取出来，从原列表删除，如果列表为空，则申请一个新的节点
     if (listLength(server.objfreelist)) {
         listNode *head = listFirst(server.objfreelist);
         o = listNodeValue(head);
@@ -1548,16 +1553,17 @@ static robj *createObject(int type, void *ptr) {
         o = zmalloc(sizeof(*o));
     }
     if (!o) oom("createObject");
+    // 设置redisObj的值
     o->type = type;
     o->ptr = ptr;
     o->refcount = 1;
     return o;
 }
-
+// 申请一个redisObj，类型是字符串
 static robj *createStringObject(char *ptr, size_t len) {
     return createObject(REDIS_STRING,sdsnewlen(ptr,len));
 }
-
+// 申请一个redisObj，类型是列表
 static robj *createListObject(void) {
     list *l = listCreate();
 
@@ -1565,13 +1571,13 @@ static robj *createListObject(void) {
     listSetFreeMethod(l,decrRefCount);
     return createObject(REDIS_LIST,l);
 }
-
+// 申请redisObj，类型是字典
 static robj *createSetObject(void) {
     dict *d = dictCreate(&setDictType,NULL);
     if (!d) oom("dictCreate");
     return createObject(REDIS_SET,d);
 }
-
+// 和上面对应，释放内存
 static void freeStringObject(robj *o) {
     sdsfree(o->ptr);
 }
@@ -1587,7 +1593,7 @@ static void freeSetObject(robj *o) {
 static void freeHashObject(robj *o) {
     dictRelease((dict*) o->ptr);
 }
-
+// 增加引用计数
 static void incrRefCount(robj *o) {
     o->refcount++;
 #ifdef DEBUG_REFCOUNT
@@ -1595,7 +1601,7 @@ static void incrRefCount(robj *o) {
         printf("Increment '%s'(%p), now is: %d\n",o->ptr,o,o->refcount);
 #endif
 }
-
+// 减少引用计数
 static void decrRefCount(void *obj) {
     robj *o = obj;
 
@@ -1603,6 +1609,7 @@ static void decrRefCount(void *obj) {
     if (o->type == REDIS_STRING)
         printf("Decrement '%s'(%p), now is: %d\n",o->ptr,o,o->refcount-1);
 #endif
+    // 没有人引用该对象了，释放内存
     if (--(o->refcount) == 0) {
         switch(o->type) {
         case REDIS_STRING: freeStringObject(o); break;
@@ -1611,6 +1618,10 @@ static void decrRefCount(void *obj) {
         case REDIS_HASH: freeHashObject(o); break;
         default: assert(0 != 0); break;
         }
+        /*
+            1 如果空闲链表项达到阈值则直接释放该对象
+            2 空闲链表没有达到阈值，则追加到空闲链表，如果追加失败则直接释放内存
+        */
         if (listLength(server.objfreelist) > REDIS_OBJFREELIST_MAX ||
             !listAddNodeHead(server.objfreelist,o))
             zfree(o);
@@ -1661,12 +1672,12 @@ static robj *tryObjectSharing(robj *o) {
         return o;
     }
 }
-
+// 判断key是否在字典里，是则返回值，否则返回NULL
 static robj *lookupKey(redisDb *db, robj *key) {
     dictEntry *de = dictFind(db->dict,key);
     return de ? dictGetEntryVal(de) : NULL;
 }
-
+// 在字典里查找键，查找前先判断是否已经过期，是则删除
 static robj *lookupKeyRead(redisDb *db, robj *key) {
     expireIfNeeded(db,key);
     return lookupKey(db,key);
@@ -3593,14 +3604,17 @@ static int expireIfNeeded(redisDb *db, robj *key) {
     dictEntry *de;
 
     /* No expire? return ASAP */
+    // expires字典里没有节点或者有节点但是没有key对应的节点，则不需要处理
     if (dictSize(db->expires) == 0 ||
        (de = dictFind(db->expires,key)) == NULL) return 0;
 
     /* Lookup the expire */
+    // expires字典里有key对应的节点，但是还没有过期，则不需要处理
     when = (time_t) dictGetEntryVal(de);
     if (time(NULL) <= when) return 0;
 
     /* Delete the key */
+    // key对应的节点过期了，则从两个字典删除
     dictDelete(db->expires,key);
     return dictDelete(db->dict,key) == DICT_OK;
 }

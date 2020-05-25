@@ -84,15 +84,20 @@ void aeDeleteFileEvent(aeEventLoop *eventLoop, int fd, int mask)
     fe = eventLoop->fileEventHead;
     while(fe) {
         if (fe->fd == fd && fe->mask == mask) {
+            // 说明待删除的节点是第一个节点，直接修改头节点的指针
             if (prev == NULL)
                 eventLoop->fileEventHead = fe->next;
             else
+                // 修改prev节点的next指针指向当前删除节点的下一个节点
                 prev->next = fe->next;
+            // 钩子函数
             if (fe->finalizerProc)
                 fe->finalizerProc(eventLoop, fe->clientData);
+            // 释放待删除节点的内存
             zfree(fe);
             return;
         }
+        // 记录上一个节点，当找到待删除节点时，修改prev指针的next指针（如果prev非空）为待删除节点的下一个节点
         prev = fe;
         fe = fe->next;
     }
@@ -376,6 +381,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             }
         }
     }
+    // 处理的事件个数
     return processed; /* return the number of processed file/time events */
 }
 
