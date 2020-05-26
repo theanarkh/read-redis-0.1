@@ -799,7 +799,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
     return 1000;
 }
-
+// 创建共享的对象（数据）
 static void createSharedObjects(void) {
     shared.crlf = createObject(REDIS_STRING,sdsnew("\r\n"));
     shared.ok = createObject(REDIS_STRING,sdsnew("+OK\r\n"));
@@ -838,13 +838,16 @@ static void createSharedObjects(void) {
 }
 
 static void appendServerSaveParams(time_t seconds, int changes) {
+    // 在原来内存的基础上多分配一个元素的内存，如果原来是NULL，则直接分配一个元素对应的内存
     server.saveparams = zrealloc(server.saveparams,sizeof(struct saveparam)*(server.saveparamslen+1));
     if (server.saveparams == NULL) oom("appendServerSaveParams");
+    // 最后一个元素是空项，保存追加的信息
     server.saveparams[server.saveparamslen].seconds = seconds;
     server.saveparams[server.saveparamslen].changes = changes;
+    // 个数加一
     server.saveparamslen++;
 }
-
+// 重置
 static void ResetServerSaveParams() {
     zfree(server.saveparams);
     server.saveparams = NULL;
@@ -896,11 +899,13 @@ static void initServer() {
     server.sharingpoolsize = 1024;
     if (!server.db || !server.clients || !server.slaves || !server.monitors || !server.el || !server.objfreelist)
         oom("server initialization"); /* Fatal OOM */
+    // 启动服务器，保存返回的文件描述符
     server.fd = anetTcpServer(server.neterr, server.port, server.bindaddr);
     if (server.fd == -1) {
         redisLog(REDIS_WARNING, "Opening TCP port: %s", server.neterr);
         exit(1);
     }
+    // 初始化db
     for (j = 0; j < server.dbnum; j++) {
         server.db[j].dict = dictCreate(&hashDictType,NULL);
         server.db[j].expires = dictCreate(&setDictType,NULL);
@@ -920,8 +925,9 @@ static void initServer() {
 /* Empty the whole database */
 static long long emptyDb() {
     int j;
+    // 记录清除的元素个数
     long long removed = 0;
-
+    // 清除每个字典结构体里的数据，但是不释放字典结构体本身的内存
     for (j = 0; j < server.dbnum; j++) {
         removed += dictSize(server.db[j].dict);
         dictEmpty(server.db[j].dict);
@@ -1066,7 +1072,7 @@ loaderr:
     fprintf(stderr, "%s\n", err);
     exit(1);
 }
-
+// 释放参数，如果引用数为0则释放对应的内存
 static void freeClientArgv(redisClient *c) {
     int j;
 
@@ -1074,18 +1080,23 @@ static void freeClientArgv(redisClient *c) {
         decrRefCount(c->argv[j]);
     c->argc = 0;
 }
-
+// 是释放一个客户端连接
 static void freeClient(redisClient *c) {
     listNode *ln;
-
+    // 撤销注册的事件
     aeDeleteFileEvent(server.el,c->fd,AE_READABLE);
     aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
+    // 释放保存的客户端数据
     sdsfree(c->querybuf);
+    // 释放缓存的回复
     listRelease(c->reply);
     freeClientArgv(c);
+    // 关闭通信的文件描述符
     close(c->fd);
+    // 从client链表中找到对应的client
     ln = listSearchKey(server.clients,c);
     assert(ln != NULL);
+    // 从链表中删除该client
     listDelNode(server.clients,ln);
     if (c->flags & REDIS_SLAVE) {
         if (c->replstate == REDIS_REPL_SEND_BULK && c->repldbfd != -1)
@@ -1099,16 +1110,18 @@ static void freeClient(redisClient *c) {
         server.master = NULL;
         server.replstate = REDIS_REPL_CONNECT;
     }
+    // 释放内存
     zfree(c->argv);
     zfree(c);
 }
-
+// 聚合reply的内容，即把多个小的聚合到一个大的redisObj
 static void glueReplyBuffersIfNeeded(redisClient *c) {
     int totlen = 0;
     listNode *ln;
     robj *o;
-
+    // 重置迭代指针
     listRewind(c->reply);
+    // 计算聚合后的大小，达到阈值则不聚合，最大1024
     while((ln = listYield(c->reply))) {
         o = ln->value;
         totlen += sdslen(o->ptr);
@@ -1117,18 +1130,25 @@ static void glueReplyBuffersIfNeeded(redisClient *c) {
         if (totlen > 1024) return;
     }
     if (totlen > 0) {
+        // 保存聚合后的数据
         char buf[1024];
         int copylen = 0;
 
         listRewind(c->reply);
+        // 遍历每个reply，开始聚合
         while((ln = listYield(c->reply))) {
             o = ln->value;
+            // 逐个reply复制到buf
             memcpy(buf+copylen,o->ptr,sdslen(o->ptr));
+            // 第一个可用的内存地址
             copylen += sdslen(o->ptr);
+            // 聚合完则从队列中删除
             listDelNode(c->reply,ln);
         }
         /* Now the output buffer is empty, add the new single element */
+        // 聚合后创建一个redisObj保存聚合的内容
         o = createObject(REDIS_STRING,sdsnewlen(buf,totlen));
+        // 聚合后重新追加到reply队列
         if (!listAddNodeTail(c->reply,o)) oom("listAddNodeTail");
     }
 }
@@ -1145,7 +1165,7 @@ static void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask)
     while(listLength(c->reply)) {
         o = listNodeValue(listFirst(c->reply));
         objlen = sdslen(o->ptr);
-
+        // 无效值，从队列中删除
         if (objlen == 0) {
             listDelNode(c->reply,listFirst(c->reply));
             continue;
@@ -1176,12 +1196,13 @@ static void sendReplyToClient(aeEventLoop *el, int fd, void *privdata, int mask)
         }
     }
     if (totwritten > 0) c->lastinteraction = time(NULL);
+    // 发完了撤销写事件
     if (listLength(c->reply) == 0) {
         c->sentlen = 0;
         aeDeleteFileEvent(server.el,c->fd,AE_WRITABLE);
     }
 }
-
+// 通过字符串找到对应的命令
 static struct redisCommand *lookupCommand(char *name) {
     int j = 0;
     while(cmdTable[j].name != NULL) {
@@ -1211,11 +1232,14 @@ static int processCommand(redisClient *c) {
 
     /* The QUIT command is handled as a special case. Normal command
      * procs are unable to close the client connection safely */
+    // 退出
     if (!strcasecmp(c->argv[0]->ptr,"quit")) {
         freeClient(c);
         return 0;
     }
+    // 通过客户端发送的字符串找出命令
     cmd = lookupCommand(c->argv[0]->ptr);
+    // 不支持的命令
     if (!cmd) {
         addReplySds(c,sdsnew("-ERR unknown command\r\n"));
         resetClient(c);
@@ -1346,7 +1370,7 @@ static void replicationFeedSlaves(list *slaves, struct redisCommand *cmd, int di
     for (j = 0; j < outc; j++) decrRefCount(outv[j]);
     if (outv != static_outv) zfree(outv);
 }
-
+// 读取客户端发送过来的数据
 static void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
     redisClient *c = (redisClient*) privdata;
     char buf[REDIS_IOBUF_LEN];
@@ -1460,7 +1484,7 @@ static void *dupClientReplyValue(void *o) {
     incrRefCount((robj*)o);
     return 0;
 }
-
+// 创建一个client结构体，和客户端建立连接后调用
 static redisClient *createClient(int fd) {
     redisClient *c = zmalloc(sizeof(*c));
 
@@ -1489,17 +1513,19 @@ static redisClient *createClient(int fd) {
     if (!listAddNodeTail(server.clients,c)) oom("listAddNodeTail");
     return c;
 }
-
+// 追加一个回复给客户端
 static void addReply(redisClient *c, robj *obj) {
+    // reply队列为0，说明之前还没有注册过事件
     if (listLength(c->reply) == 0 &&
         (c->replstate == REDIS_REPL_NONE ||
          c->replstate == REDIS_REPL_ONLINE) &&
         aeCreateFileEvent(server.el, c->fd, AE_WRITABLE,
         sendReplyToClient, c, NULL) == AE_ERR) return;
+    // 追加到回复队列
     if (!listAddNodeTail(c->reply,obj)) oom("listAddNodeTail");
     incrRefCount(obj);
 }
-
+// 追加一个回复
 static void addReplySds(redisClient *c, sds s) {
     robj *o = createObject(REDIS_STRING,s);
     addReply(c,o);
@@ -1513,13 +1539,14 @@ static void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     REDIS_NOTUSED(el);
     REDIS_NOTUSED(mask);
     REDIS_NOTUSED(privdata);
-
+    // 摘下一个已完成三次握手的请求
     cfd = anetAccept(server.neterr, fd, cip, &cport);
     if (cfd == AE_ERR) {
         redisLog(REDIS_DEBUG,"Accepting client connection: %s", server.neterr);
         return;
     }
     redisLog(REDIS_DEBUG,"Accepted %s:%d", cip, cport);
+    // 创建一个client，把通信的文件描述符保存到client
     if ((c = createClient(cfd)) == NULL) {
         redisLog(REDIS_WARNING,"Error allocating resoures for the client");
         close(cfd); /* May be already closed, just ingore errors */
@@ -1529,6 +1556,7 @@ static void acceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
      * connection. Note that we create the client instead to check before
      * for this condition, since now the socket is already set in nonblocking
      * mode and we can send an error for free using the Kernel I/O */
+    // 连接过多，通知客户端，然后释放client结构体
     if (server.maxclients && listLength(server.clients) > server.maxclients) {
         char *err = "-ERR max number of clients reached\r\n";
 
@@ -2091,7 +2119,7 @@ static robj *rdbLoadStringObject(FILE*fp, int rdbver) {
     }
     return tryObjectSharing(createObject(REDIS_STRING,val));
 }
-
+// 加载硬盘的数据
 static int rdbLoad(char *filename) {
     FILE *fp;
     robj *keyobj = NULL;
@@ -2106,11 +2134,13 @@ static int rdbLoad(char *filename) {
     if (!fp) return REDIS_ERR;
     if (fread(buf,9,1,fp) == 0) goto eoferr;
     buf[9] = '\0';
+    // 判断前5个字符是不是REDIS
     if (memcmp(buf,"REDIS",5) != 0) {
         fclose(fp);
         redisLog(REDIS_WARNING,"Wrong signature trying to load DB from file");
         return REDIS_ERR;
     }
+    // 判断版本，第5-8个字符
     rdbver = atoi(buf+5);
     if (rdbver > 1) {
         fclose(fp);
@@ -2121,6 +2151,7 @@ static int rdbLoad(char *filename) {
         robj *o;
 
         /* Read type. */
+        // 读取类型
         if ((type = rdbLoadType(fp)) == -1) goto eoferr;
         if (type == REDIS_EXPIRETIME) {
             if ((expiretime = rdbLoadTime(fp)) == -1) goto eoferr;
@@ -2345,7 +2376,7 @@ static void incrbyCommand(redisClient *c) {
 static void decrbyCommand(redisClient *c) {
     long long incr = strtoll(c->argv[2]->ptr, NULL, 10);
     incrDecrCommand(c,-incr);
-}
+}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
 
 /* ========================= Type agnostic commands ========================= */
 
